@@ -9,7 +9,6 @@
 body{background:radial-gradient(1200px 700px at 50% -10%, #22331f, #0b100b 70%);color:#d8dcc8;font-family:'Segoe UI','Microsoft YaHei',sans-serif;min-height:100vh;padding:14px}
 header{text-align:center;margin-bottom:12px}
 h1{color:#e8c66a;letter-spacing:2px;font-size:30px}
-.sub{color:#9aa88f;font-size:13px;margin-top:2px}
 #app{display:flex;gap:16px;align-items:flex-start;justify-content:center;flex-wrap:wrap;max-width:1700px;margin:0 auto}
 #left{flex:1 1 900px;max-width:1280px;min-width:0}
 #wrap{position:relative;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
@@ -61,7 +60,6 @@ button{font-family:inherit;cursor:pointer;touch-action:manipulation;-webkit-tap-
 <body>
 <header>
   <h1>🎱 斯诺克 <span style="font-size:17px">Snooker</span></h1>
-  <p class="sub">计算机图形学课程作业 · 单文件 HTML · 打开即玩（光影渲染 + 真实物理轨迹）</p>
 </header>
 <main id="app">
   <div id="left">
@@ -223,6 +221,7 @@ let seqIndex=0;            // 清台后顺序击打指针
 let suddenDeath=false;     // 黑球决胜
 let mode='place';          // 'place' | 'aim' | 'shoot' | 'freeBall' | 'over'
 let shot=null;             // 本杆记录 {contact, potted[]}
+let shotT0=0;              // 本杆开始时刻（用于超时保险，保证回合必然结束）
 let potAnims=[];
 let spinSel='stun', sideSel='none';
 let aimDir={x:1,y:0};
@@ -272,11 +271,12 @@ function stepPhysics(){
     }
     const cvx=b.vx-R*b.wy, cvy=b.vy+R*b.wx;      // 球与台呢接触点相对速度
     const cv=Math.hypot(cvx,cvy);
-    if(cv>MU_S*DT+0.5){                          // 滑动：摩擦 + 旋转耦合
+    if(cv>3.5*MU_S*DT){                          // 滑动：摩擦 + 旋转耦合
       const f=MU_S/cv;
       b.vx-=cvx*f*DT;b.vy-=cvy*f*DT;
       b.wx-=A_SPIN*(cvy/cv)*DT;b.wy+=A_SPIN*(cvx/cv)*DT;
-    }else{                                       // 纯滚动：始终施加滚动阻力，避免低速永不停止
+    }else{                                       // 滑移小于单步可消减量(3.5*MU_S*DT)时直接转入纯滚动，
+                                                 // 否则固定步长会在滑动/滚动临界点过冲，形成周期2极限环：球永远低速滚不停
       b.wx=-b.vy/R;b.wy=b.vx/R;
       if(v>MU_R*DT){const f=MU_R/v;b.vx-=b.vx*f*DT;b.vy-=b.vy*f*DT;}
       else if(v>0.005){b.vx=0;b.vy=0;}
@@ -354,6 +354,10 @@ function updateAnims(dt){
 function allStopped(){
   for(const b of balls)if(b.onTable&&(Math.abs(b.vx)>0.4||Math.abs(b.vy)>0.4))return false;
   return true;
+}
+function anyFast(){
+  for(const b of balls)if(b.onTable&&Math.hypot(b.vx,b.vy)>3)return true;
+  return false;
 }
 
 /* ================= 规则逻辑 ================= */
@@ -462,6 +466,7 @@ function shoot(){
   cue.wx=-d.y*(v/R)*k;cue.wy=d.x*(v/R)*k;
   cue.wz=sideSel==='left'?-55:sideSel==='right'?55:0;
   shot={contact:null,potted:[]};
+  shotT0=performance.now();
   mode='shoot';power=0;sndShoot();
 }
 function resolveShot(){
@@ -537,7 +542,7 @@ function resolveShot(){
       freeBall=null;
       if(realPotted){
         if(redsLeft>0){
-          respot(realPotted);onType='red';
+          respot(realPotted);onType='red';nominated=null;
           banner('打进'+NAMES[realPotted.type]+'！+'+val+' 分，目标转为红球',3.5);
         }else{
           colorsOn[realPotted.type]=false;seqAdvance();
@@ -1071,7 +1076,11 @@ function frame(t){
     acc+=dt;
     let n=0;
     while(acc>=DT&&n<60){stepPhysics();updateAnims(DT);acc-=DT;n++;}
-    if(allStopped()&&potAnims.length===0)resolveShot();
+    if(potAnims.length===0){
+      if(allStopped())resolveShot();
+      /* 超时保险：异常状态下若 20 秒内仍有球以 <3px/s 缓慢爬行，强制结算，保证回合必然结束 */
+      else if(performance.now()-shotT0>20000&&!anyFast())resolveShot();
+    }
   }else{
     updateAnims(dt);
   }
